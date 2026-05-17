@@ -96,7 +96,7 @@ export default function MatchForm({ onResults }) {
       </div>
 
       <div className="alert alert-info" style={{ marginTop: 8 }}>
-        💡 <strong>Basic Match</strong> uses skill overlap algorithm. <strong>AI Match</strong> uses GPT-3.5 Turbo for deeper analysis.
+        💡 💡 <strong>Basic Match</strong> uses skill overlap algorithm. <strong>AI Match</strong> uses LLaMA 3 AI for deeper analysis.
       </div>
 
       <div className="btn-row">

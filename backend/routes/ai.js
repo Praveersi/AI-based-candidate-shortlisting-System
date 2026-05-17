@@ -12,7 +12,11 @@ router.post("/shortlist", async (req, res) => {
       return res.status(400).json({ error: "requiredSkills is required." });
     }
 
-    // Fetch candidates meeting experience criteria
+    // 🔥 Safety check
+    if (!process.env.OPENROUTER_API_KEY) {
+      return res.status(500).json({ error: "API key missing" });
+    }
+
     const candidates = await Candidate.find({
       experience: { $gte: minExperience || 0 },
     });
@@ -21,7 +25,6 @@ router.post("/shortlist", async (req, res) => {
       return res.json({ message: "No candidates found matching experience criteria.", results: [] });
     }
 
-    // Build prompt
     const candidateList = candidates
       .map(
         (c, i) =>
@@ -43,21 +46,20 @@ ${candidateList}
 TASK:
 1. Rank all candidates from best to worst fit.
 2. For each candidate give a match score out of 100.
-3. Write a 1-2 sentence explanation of why they are or aren't a good fit.
-4. Also suggest 2 interview questions for the top candidate.
+3. Write a 1-2 sentence explanation.
+4. Suggest 2 interview questions for the top candidate.
 
-Respond ONLY in this exact JSON format (no markdown, no extra text):
+Respond ONLY in JSON:
 {
   "rankedCandidates": [
     {
       "name": "Candidate Name",
       "score": 85,
-      "explanation": "Why this candidate fits or doesn't fit.",
+      "explanation": "Reason",
       "interviewQuestions": ["Q1", "Q2"]
     }
   ]
 }
-Note: include "interviewQuestions" only for the top-ranked candidate, leave it as empty array [] for others.
 `;
 
     const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
@@ -65,11 +67,9 @@ Note: include "interviewQuestions" only for the top-ranked candidate, leave it a
       headers: {
         Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
         "Content-Type": "application/json",
-        "HTTP-Referer": "https://candidate-shortlister.onrender.com",
-        "X-Title": "Candidate Shortlister",
       },
       body: JSON.stringify({
-        model: "openai/gpt-3.5-turbo",
+        model: "meta-llama/llama-3-8b-instruct",  // ✅ FIXED
         messages: [{ role: "user", content: prompt }],
         temperature: 0.3,
       }),
@@ -83,7 +83,6 @@ Note: include "interviewQuestions" only for the top-ranked candidate, leave it a
     const data = await response.json();
     const rawText = data.choices[0].message.content;
 
-    // Parse JSON from AI response
     let parsed;
     try {
       const clean = rawText.replace(/```json|```/g, "").trim();
@@ -92,7 +91,6 @@ Note: include "interviewQuestions" only for the top-ranked candidate, leave it a
       return res.status(500).json({ error: "AI returned invalid JSON", raw: rawText });
     }
 
-    // Attach candidate metadata
     const enriched = parsed.rankedCandidates.map((aiResult) => {
       const match = candidates.find(
         (c) => c.name.toLowerCase() === aiResult.name.toLowerCase()
@@ -106,49 +104,6 @@ Note: include "interviewQuestions" only for the top-ranked candidate, leave it a
     });
 
     res.json({ total: enriched.length, results: enriched });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// POST /api/ai/interview-questions — Generate questions for a specific candidate
-router.post("/interview-questions", async (req, res) => {
-  try {
-    const { candidateId, jobRole, requiredSkills } = req.body;
-    const candidate = await Candidate.findById(candidateId);
-    if (!candidate) return res.status(404).json({ error: "Candidate not found" });
-
-    const prompt = `
-Generate 5 technical interview questions for the following candidate:
-Name: ${candidate.name}
-Skills: ${candidate.skills.join(", ")}
-Experience: ${candidate.experience} years
-Job Role: ${jobRole || "Software Developer"}
-Required Skills: ${(requiredSkills || []).join(", ")}
-
-Respond ONLY in JSON format:
-{ "questions": ["Q1", "Q2", "Q3", "Q4", "Q5"] }
-`;
-
-    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://candidate-shortlister.onrender.com",
-        "X-Title": "Candidate Shortlister",
-      },
-      body: JSON.stringify({
-        model: "openai/gpt-3.5-turbo",
-        messages: [{ role: "user", content: prompt }],
-        temperature: 0.5,
-      }),
-    });
-
-    const data = await response.json();
-    const raw = data.choices[0].message.content.replace(/```json|```/g, "").trim();
-    const parsed = JSON.parse(raw);
-    res.json({ candidate: candidate.name, ...parsed });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
