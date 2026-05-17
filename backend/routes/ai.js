@@ -3,7 +3,18 @@ const router = express.Router();
 const fetch = require("node-fetch");
 const Candidate = require("../models/Candidate");
 
-// POST /api/ai/shortlist — AI-based candidate ranking via OpenRouter
+// Helper: robustly extract JSON from AI response
+function extractJSON(text) {
+  let clean = text.replace(/```json|```/g, "").trim();
+  try { return JSON.parse(clean); } catch {}
+  const match = clean.match(/\{[\s\S]*\}/);
+  if (match) {
+    try { return JSON.parse(match[0]); } catch {}
+  }
+  return null;
+}
+
+// POST /api/ai/shortlist
 router.post("/shortlist", async (req, res) => {
   try {
     const { requiredSkills, minExperience, preferredSkills } = req.body;
@@ -12,9 +23,8 @@ router.post("/shortlist", async (req, res) => {
       return res.status(400).json({ error: "requiredSkills is required." });
     }
 
-    // 🔥 Safety check
     if (!process.env.OPENROUTER_API_KEY) {
-      return res.status(500).json({ error: "API key missing" });
+      return res.status(500).json({ error: "API key missing on server." });
     }
 
     const candidates = await Candidate.find({
@@ -22,56 +32,46 @@ router.post("/shortlist", async (req, res) => {
     });
 
     if (candidates.length === 0) {
-      return res.json({ message: "No candidates found matching experience criteria.", results: [] });
+      return res.json({ message: "No candidates found.", results: [] });
     }
 
     const candidateList = candidates
-      .map(
-        (c, i) =>
-          `${i + 1}. ${c.name} | Skills: ${c.skills.join(", ")} | Experience: ${c.experience} years${c.bio ? ` | Bio: ${c.bio}` : ""}`
+      .map((c, i) =>
+        `${i + 1}. Name: ${c.name} | Skills: ${c.skills.join(", ")} | Experience: ${c.experience} years${c.bio ? ` | Bio: ${c.bio}` : ""}`
       )
       .join("\n");
 
-    const prompt = `
-You are a professional technical recruiter AI. Analyze and rank the following candidates for a job.
+    const prompt = `You are a technical recruiter AI. Rank these candidates for the job below.
 
-JOB REQUIREMENTS:
-- Required Skills: ${requiredSkills.join(", ")}
-- Minimum Experience: ${minExperience || 0} years
-- Preferred Skills: ${(preferredSkills || []).join(", ") || "None"}
+JOB:
+Required Skills: ${requiredSkills.join(", ")}
+Min Experience: ${minExperience || 0} years
+Preferred Skills: ${(preferredSkills || []).join(", ") || "None"}
 
 CANDIDATES:
 ${candidateList}
 
-TASK:
-1. Rank all candidates from best to worst fit.
-2. For each candidate give a match score out of 100.
-3. Write a 1-2 sentence explanation.
-4. Suggest 2 interview questions for the top candidate.
+Return ONLY raw JSON, no markdown, no extra text:
+{"rankedCandidates":[{"name":"Full Name","score":85,"explanation":"Short reason.","interviewQuestions":["Q1","Q2"]},{"name":"Other Name","score":60,"explanation":"Short reason.","interviewQuestions":[]}]}`;
 
-Respond ONLY in JSON:
-{
-  "rankedCandidates": [
-    {
-      "name": "Candidate Name",
-      "score": 85,
-      "explanation": "Reason",
-      "interviewQuestions": ["Q1", "Q2"]
-    }
-  ]
-}
-`;
-console.log("API KEY:", process.env.OPENROUTER_API_KEY);
     const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
         "Content-Type": "application/json",
+        "HTTP-Referer": "https://candidate-shortlister.onrender.com",
+        "X-Title": "Candidate Shortlister",
       },
       body: JSON.stringify({
-        model: "meta-llama/llama-3-8b-instruct",  // ✅ FIXED
-        messages: [{ role: "user", content: prompt }],
-        temperature: 0.3,
+        model: "meta-llama/llama-3-8b-instruct",
+        messages: [
+          {
+            role: "system",
+            content: "You are a JSON-only API. Return valid raw JSON only. No markdown, no explanation, no extra text outside the JSON object."
+          },
+          { role: "user", content: prompt }
+        ],
+        temperature: 0.2,
       }),
     });
 
@@ -83,11 +83,8 @@ console.log("API KEY:", process.env.OPENROUTER_API_KEY);
     const data = await response.json();
     const rawText = data.choices[0].message.content;
 
-    let parsed;
-    try {
-      const clean = rawText.replace(/```json|```/g, "").trim();
-      parsed = JSON.parse(clean);
-    } catch {
+    const parsed = extractJSON(rawText);
+    if (!parsed || !parsed.rankedCandidates) {
       return res.status(500).json({ error: "AI returned invalid JSON", raw: rawText });
     }
 
@@ -104,6 +101,50 @@ console.log("API KEY:", process.env.OPENROUTER_API_KEY);
     });
 
     res.json({ total: enriched.length, results: enriched });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/ai/interview-questions
+router.post("/interview-questions", async (req, res) => {
+  try {
+    const { candidateId, jobRole, requiredSkills } = req.body;
+    const candidate = await Candidate.findById(candidateId);
+    if (!candidate) return res.status(404).json({ error: "Candidate not found" });
+
+    const prompt = `Generate 5 technical interview questions for:
+Name: ${candidate.name}
+Skills: ${candidate.skills.join(", ")}
+Experience: ${candidate.experience} years
+Job Role: ${jobRole || "Software Developer"}
+Required Skills: ${(requiredSkills || []).join(", ")}
+
+Return ONLY raw JSON: {"questions":["Q1","Q2","Q3","Q4","Q5"]}`;
+
+    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://candidate-shortlister.onrender.com",
+        "X-Title": "Candidate Shortlister",
+      },
+      body: JSON.stringify({
+        model: "meta-llama/llama-3-8b-instruct",
+        messages: [
+          { role: "system", content: "You are a JSON-only API. Return raw JSON only." },
+          { role: "user", content: prompt }
+        ],
+        temperature: 0.5,
+      }),
+    });
+
+    const data = await response.json();
+    const rawText = data.choices[0].message.content;
+    const parsed = extractJSON(rawText);
+    if (!parsed) return res.status(500).json({ error: "AI returned invalid JSON", raw: rawText });
+    res.json({ candidate: candidate.name, ...parsed });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
