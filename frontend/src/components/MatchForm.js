@@ -49,7 +49,11 @@ export default function MatchForm({ onResults }) {
       });
       onResults(res.data, true);
     } catch (err) {
-      setError(err.response?.data?.error || "AI shortlisting failed.");
+      setError(
+  err.response?.data?.details ||
+  err.response?.data?.error ||
+  "AI shortlisting failed."
+);
     } finally {
       setAiLoading(false);
     }
