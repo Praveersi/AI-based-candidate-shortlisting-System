@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import axios from "axios";
 
-const API = process.env.REACT_APP_API_URL || "";
+const API = "https://ai-based-candidate-shortlisting-system-nksd.onrender.com";
 
 export default function MatchForm({ onResults }) {
   const [form, setForm] = useState({
