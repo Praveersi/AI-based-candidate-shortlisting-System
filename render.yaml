@@ -1,0 +1,30 @@
+services:
+  # Backend API Service
+  - type: web
+    name: candidate-shortlister-api
+    env: node
+    rootDir: backend
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: MONGO_URI
+        sync: false   # Set manually in Render dashboard
+      - key: OPENROUTER_API_KEY
+        sync: false   # Set manually in Render dashboard
+
+  # Frontend React App
+  - type: web
+    name: candidate-shortlister-frontend
+    env: static
+    rootDir: frontend
+    buildCommand: npm install && npm run build
+    staticPublishPath: build
+    envVars:
+      - key: REACT_APP_API_URL
+        sync: false   # Set to your backend Render URL e.g. https://candidate-shortlister-api.onrender.com
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
